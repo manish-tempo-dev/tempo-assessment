@@ -1,5 +1,6 @@
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 // The task:
 // 1. Read and understand the Hierarchy data structure described in this file.
@@ -84,9 +85,88 @@ interface Hierarchy {
  * A node is present in the filtered hierarchy iff its node ID passes the predicate and all of its ancestors pass it as well.
  */
 class HierarchyFilter {
+
+    /**
+     * Assumptions:
+     * 1) Input hierarchy respects the depth invariants described in the Javadoc.
+     * 2) The filtered hierarchy preserves the original node order and the original depth values
+     *    for included nodes (since included nodes necessarily include all ancestors).
+     * 3) If hierarchy.size() == 0, return an empty hierarchy.
+     *
+     * Time: O(n)
+     * Space: O(maxDepth) auxiliary, plus output arrays.
+     */
     public static Hierarchy filter(Hierarchy hierarchy, java.util.function.IntPredicate nodeIdPredicate) {
-        // todo implement
-        return new ArrayBasedHierarchy(new int[0], new int[0]);
+        int n = hierarchy.size();
+        if (n == 0) return new ArrayBasedHierarchy(new int[0], new int[0]);
+
+        // includedAtDepth[d] == whether the most recent node we've seen at depth d is included.
+        // We grow this dynamically as we discover larger depths.
+        boolean[] includedAtDepth = new boolean[8];
+        int currentStackSize = 0; // number of valid entries in includedAtDepth, i.e., maxDepthSeen+1
+
+        // First pass: count included nodes.
+        int kept = 0;
+        for (int i = 0; i < n; i++) {
+            int d = hierarchy.depth(i);
+            if (d < 0) throw new IllegalArgumentException("Negative depth at index " + i);
+
+            if (d >= includedAtDepth.length) {
+                includedAtDepth = grow(includedAtDepth, d + 1);
+            }
+            // Pop to depth d (i.e., forget deeper ancestors when we move to a shallower node)
+            currentStackSize = Math.min(currentStackSize, d + 1);
+
+            boolean parentIncluded = (d == 0) ? true : includedAtDepth[d - 1];
+            boolean include = parentIncluded && nodeIdPredicate.test(hierarchy.nodeId(i));
+
+            includedAtDepth[d] = include;
+            if (d + 1 > currentStackSize) currentStackSize = d + 1;
+
+            if (include) kept++;
+        }
+
+        if (kept == 0) return new ArrayBasedHierarchy(new int[0], new int[0]);
+
+        // Second pass: fill output arrays.
+        int[] outIds = new int[kept];
+        int[] outDepths = new int[kept];
+
+        includedAtDepth = new boolean[Math.max(8, includedAtDepth.length)];
+        currentStackSize = 0;
+
+        int w = 0;
+        for (int i = 0; i < n; i++) {
+            int id = hierarchy.nodeId(i);
+            int d = hierarchy.depth(i);
+
+            if (d >= includedAtDepth.length) {
+                includedAtDepth = grow(includedAtDepth, d + 1);
+            }
+            currentStackSize = Math.min(currentStackSize, d + 1);
+
+            boolean parentIncluded = (d == 0) ? true : includedAtDepth[d - 1];
+            boolean include = parentIncluded && nodeIdPredicate.test(id);
+
+            includedAtDepth[d] = include;
+            if (d + 1 > currentStackSize) currentStackSize = d + 1;
+
+            if (include) {
+                outIds[w] = id;
+                outDepths[w] = d;
+                w++;
+            }
+        }
+
+        return new ArrayBasedHierarchy(outIds, outDepths);
+    }
+
+    private static boolean[] grow(boolean[] arr, int minLen) {
+        int newLen = arr.length;
+        while (newLen < minLen) newLen = newLen * 2;
+        boolean[] n = new boolean[newLen];
+        System.arraycopy(arr, 0, n, 0, arr.length);
+        return n;
     }
 }
 
@@ -116,6 +196,11 @@ class ArrayBasedHierarchy implements Hierarchy {
 }
 
 class FilterTest {
+
+    private static void assertHierarchyEquals(Hierarchy expected, Hierarchy actual) {
+        assertEquals(expected.formatString(), actual.formatString());
+    }
+
     @Test
     void testFilter() {
         Hierarchy unfiltered = new ArrayBasedHierarchy(
@@ -129,4 +214,147 @@ class FilterTest {
         );
         assertEquals(filteredExpected.formatString(), filteredActual.formatString());
     }
+
+    @Test
+    void testFilter_allPass_returnsSame() {
+        Hierarchy h = new ArrayBasedHierarchy(
+            new int[]{10, 20, 30, 40},
+            new int[]{0, 1, 1, 0}
+        );
+
+        Hierarchy actual = HierarchyFilter.filter(h, id -> true);
+
+        assertHierarchyEquals(h, actual);
+    }
+
+    @Test
+    void testFilter_emptyHierarchy_returnsEmpty() {
+        Hierarchy h = new ArrayBasedHierarchy(new int[0], new int[0]);
+
+        Hierarchy actual = HierarchyFilter.filter(h, id -> true);
+
+        assertHierarchyEquals(new ArrayBasedHierarchy(new int[0], new int[0]), actual);
+    }
+
+    @Test
+    void testFilter_rootRejected_excludesWholeTree_butKeepsOtherTrees() {
+        // Forest:
+        // 1
+        // - 2
+        // 3
+        // - 4
+        Hierarchy h = new ArrayBasedHierarchy(
+            new int[]{1, 2, 3, 4},
+            new int[]{0, 1, 0, 1}
+        );
+
+        // reject root 1, accept everything else by predicate
+        Hierarchy actual = HierarchyFilter.filter(h, id -> id != 1);
+
+        // 2 must be excluded because its ancestor (1) is excluded. Tree rooted at 3 remains.
+        Hierarchy expected = new ArrayBasedHierarchy(
+            new int[]{3, 4},
+            new int[]{0, 1}
+        );
+
+        assertHierarchyEquals(expected, actual);
+    }
+
+    @Test
+    void testFilter_parentRejected_excludesDescendants_evenIfTheyPassPredicate() {
+        // Tree:
+        // 1
+        // - 2
+        // - - 3
+        // - 4
+        Hierarchy h = new ArrayBasedHierarchy(
+            new int[]{1, 2, 3, 4},
+            new int[]{0, 1, 2, 1}
+        );
+
+        // Reject node 2 only.
+        Hierarchy actual = HierarchyFilter.filter(h, id -> id != 2);
+
+        // 3 is excluded because ancestor 2 is excluded; 4 is sibling of 2 so it's fine.
+        Hierarchy expected = new ArrayBasedHierarchy(
+            new int[]{1, 4},
+            new int[]{0, 1}
+        );
+
+        assertHierarchyEquals(expected, actual);
+    }
+
+    @Test
+    void testFilter_siblingRejection_doesNotAffectOtherSiblingsOrTheirSubtrees() {
+        // Tree:
+        // 1
+        // - 2
+        // - - 3
+        // - 4
+        // - - 5
+        Hierarchy h = new ArrayBasedHierarchy(
+            new int[]{1, 2, 3, 4, 5},
+            new int[]{0, 1, 2, 1, 2}
+        );
+
+        // Reject node 2; should exclude 2 and 3, but keep 4 and 5.
+        Hierarchy actual = HierarchyFilter.filter(h, id -> id != 2);
+
+        Hierarchy expected = new ArrayBasedHierarchy(
+            new int[]{1, 4, 5},
+            new int[]{0, 1, 2}
+        );
+
+        assertHierarchyEquals(expected, actual);
+    }
+
+    @Test
+    void testFilter_allRootsRejected_returnsEmpty() {
+        Hierarchy h = new ArrayBasedHierarchy(
+            new int[]{1, 2, 3, 4, 5},
+            new int[]{0, 1, 0, 1, 2}
+        );
+
+        // Reject all roots (depth 0 nodes): 1 and 3
+        Hierarchy actual = HierarchyFilter.filter(h, id -> id != 1 && id != 3);
+
+        assertHierarchyEquals(new ArrayBasedHierarchy(new int[0], new int[0]), actual);
+    }
+
+    @Test
+    void testFilter_handlesDepthPopAcrossTrees_correctlyResetsAtDepth0() {
+        // Forest:
+        // 1
+        // - 2
+        // - - 3
+        // 4
+        // - 5
+        // 6
+        Hierarchy h = new ArrayBasedHierarchy(
+            new int[]{1, 2, 3, 4, 5, 6},
+            new int[]{0, 1, 2, 0, 1, 0}
+        );
+
+        // Reject node 2, but accept everything else.
+        Hierarchy actual = HierarchyFilter.filter(h, id -> id != 2);
+
+        // 1 stays, 2 and 3 removed, 4/5/6 unaffected.
+        Hierarchy expected = new ArrayBasedHierarchy(
+            new int[]{1, 4, 5, 6},
+            new int[]{0, 0, 1, 0}
+        );
+
+        assertHierarchyEquals(expected, actual);
+    }
+
+    @Test
+    void testFilter_negativeDepth_throws() {
+        Hierarchy bad = new ArrayBasedHierarchy(
+            new int[]{1},
+            new int[]{-1}
+        );
+
+        assertThrows(IllegalArgumentException.class, () -> HierarchyFilter.filter(bad, id -> true));
+    }
+
 }
