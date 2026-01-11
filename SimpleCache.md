@@ -47,3 +47,47 @@ public class SimpleCache<K, V> {
     }
 }
 ```
+
+# My Review
+
+## SimpleCache Code Review
+
+1. **Expired entries are never removed.**
+   - Issue: The cache checks TTL but does not remove expired entries from the map.
+   - Potential Impact: Over time this leads to unbounded memory growth and increased GC pressure, with a real risk of running out of heap.
+
+2. **Expiration is only checked on reads.**
+   - Issue: Entries are only evaluated for expiration when `get()` is called.
+   - Potential Impact: Expired entries that are never read remain in memory, so `size()` does not reflect the actual usable cache contents.
+
+3. **Wall-clock time is used for expiration.**
+   - Issue: `System.currentTimeMillis()` is affected by clock adjustments.
+   - Potential Impact: Time shifts can cause entries to expire too early or stay valid longer than intended, resulting in incorrect cache behavior.
+
+4. **No size limit or eviction policy.**
+   - Issue: The cache can grow without bounds.
+   - Potential Impact: With a large or unpredictable key space, this can exhaust memory and impact application stability.
+
+5. **Cache stampede on expiration.**
+   - Issue: When an entry expires, all concurrent callers see a miss and may recompute the value at the same time.
+   - Potential Impact: This can overload downstream systems and increase latency under load.
+
+6. **Expired entries remain in the map.**
+   - Issue: Even after expiration, entries are repeatedly checked but never removed.
+   - Potential Impact: This wastes CPU and memory and reduces the effectiveness of the cache over time.
+
+7. **`size()` is not a reliable metric.**
+   - Issue: `ConcurrentHashMap.size()` is approximate under concurrency and includes expired entries.
+   - Potential Impact: Using it for monitoring or limits can be misleading.
+
+8. **TTL is hard-coded.**
+   - Issue: The TTL value is fixed in the class.
+   - Potential Impact: This makes the cache harder to tune and adapt to different use cases or environments.
+
+9. **`null` return value is ambiguous.**
+   - Issue: `get()` returns `null` for both missing and expired entries.
+   - Potential Impact: Callers cannot tell whether a value was never cached or has just expired.
+
+10. **No visibility into cache behavior.**
+    - Issue: There are no counters or metrics for hits, misses, or expirations.
+    - Potential Impact: This makes it difficult to understand how the cache behaves in production or to debug issues.
